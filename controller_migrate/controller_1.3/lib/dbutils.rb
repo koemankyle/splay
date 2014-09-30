@@ -33,7 +33,7 @@ class DBUtils
 
 		# Permit debug but slow down things
 		if not SplayControllerConfig::Production
-			#db = LogObject.new(db, "DB") #uncomment this
+			db = LogObject.new(db, "DB")
 		end
 		Thread.new do
 			loop do
@@ -48,7 +48,9 @@ class DBUtils
 
 	def self.get_new_mysql # raluca: needed?
 		$log.info("New DB connection (MySQL)")
-		# We do not catch exceptions here because if there is a problem the application must end. TODO exception
+		# We do not catch exceptions here because if there is a problem the application
+		# must end.
+		# TODO exception
 		db = Mysql.new(SplayControllerConfig::SQL_HOST, SplayControllerConfig::SQL_USER, SplayControllerConfig::SQL_PASS, SplayControllerConfig::SQL_DB)
 		db.autocommit(false)
 

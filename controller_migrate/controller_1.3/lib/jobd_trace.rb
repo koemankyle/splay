@@ -327,6 +327,7 @@ class JobdTrace < Jobd
 					q_act = q_act + "('#{splayd_id}','#{job['id']}','TRACE_END','#{job['ref']}','WAITING'),"
 				end
 				q_act = q_act[0, q_act.length - 1]
+
 				$db.do "INSERT INTO actions (splayd_id, job_id, command, data, status) VALUES #{q_act}"
 
 				while true do
@@ -482,6 +483,7 @@ class JobdTrace < Jobd
 		$db.select_all "SELECT * FROM jobs WHERE
 				scheduler='#{@@scheduler}' AND status='RUNNING'" do |job|
 			# TODO error msg...
+			
 			if not $db.select_one "SELECT * FROM splayd_jobs
 				WHERE job_id='#{job['id']}' AND status!='RESERVED'"
 				set_job_status(job['id'], 'ENDED')

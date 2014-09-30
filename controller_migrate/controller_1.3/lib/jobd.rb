@@ -19,7 +19,9 @@
 ## You should have received a copy of the GNU General Public License
 ## along with Splayd. If not, see <http://www.gnu.org/licenses/>.
 
-
+require File.expand_path(File.join(File.dirname(__FILE__), 'topology_parser')) ## parse xml and and build topology map 
+#require File.expand_path(File.join(File.dirname(__FILE__), 'json')) ## to encode the topology map
+require"json" #using gem 'json' 
 class Jobd
 
 	@@threads = {} # to kill
@@ -27,6 +29,7 @@ class Jobd
 	@@dlock_jr = DistributedLock.new('job_reservation')
 
 	@@register_timeout = SplayControllerConfig::RegisterTimeout
+	@@max_queue_timeout = SplayControllerConfig::MaxQueueTimeout
 	@@poll_time = SplayControllerConfig::JobPollTime
 	@@link_log_dir = SplayControllerConfig::LinkLogDir
 	@@log_dir = SplayControllerConfig::LogDir
@@ -66,7 +69,7 @@ class Jobd
 	end
 
  	def self.status_queued
-	end
+  	end
 
 	def self.kill_max_time
 	end
@@ -90,7 +93,7 @@ class Jobd
 		out = '{"ref":"' + list['ref'] + '"'
 
 		if not list['position']
-			out += ',"position":_POSITION_'
+			out += ',"position":"_POSITION_"'
 		else
 			out += ',"position":' + list['position'].to_s
 		end
@@ -154,11 +157,13 @@ class Jobd
 			# add "my_timeline" to the JSON out string
 			out += my_timeline[0, my_timeline.length - 1] + ']'
 		end
-
+    if list['topology'] ##present if added in the raw_list function
+          out+=',"topology":'+JSON.unparse(list['topology'])
+        end
 		out += '}'
-
-		#$log.info("list json is #{out}")
-
+		if not JSON.parse(out) then
+			$log.info("Some error occurred while parsing JSON-encoded job: \n #{out}")
+		end
 		return out
 	end
 
@@ -166,6 +171,16 @@ class Jobd
 		list = {}
 		list['ref'] = job['ref']
 		list['nodes'] = []
+		topo_xml = $db.select_one "SELECT topology FROM jobs WHERE ref='#{job['ref']}'"
+  	$log.debug("Parsing topology: '#{topo_xml}' #{topo_xml.class} #{topo_xml.length}")
+    if topo_xml[0].to_s.length>0 then
+  	  @parser= TopologyParser.new() ## todo cache it
+  	  graph = @parser.parse(topo_xml.to_s,false)
+      vn=@parser.virtualnodes()
+      max=vn.keys.size
+      $log.debug("Topology defines #{vn.keys.size} VirtualNodes")
+      list['topology']=graph.splay_topology(vn)
+    end
 		c = 1
 		m_s_s.each do |m_s|
 			# 0 = full list
@@ -221,7 +236,7 @@ class Jobd
 			(1..size).each do
 				list['nodes'] << nodes.slice!(rand(nodes.size))
 			end
-
+			
 			lists[me['id']] = my_json(list)
 			pos += 1
 		end
@@ -234,7 +249,7 @@ class Jobd
 	# (query should return values with splayd_id)
 	def self.send_all_list(job, query)
 		m_s_s = $db.select_all query
-
+		
 		case job['list_type']
 		when 'HEAD' # simple head list of job['list_size'] element
 
@@ -363,6 +378,22 @@ class Jobd
 			mandatory_filter += " AND splayds.id!=#{mm['splayd_id']} "
 		end
 
+		
+		designated_filter = ""
+		pos = 0
+		$db.select_all "SELECT * FROM job_designated_splayds
+				WHERE job_id='#{job['id']}'" do |jds|
+			if pos == 0
+				designated_filter += " AND (splayds.id=#{jds['splayd_id']}"
+			else
+				designated_filter += " OR splayds.id=#{jds['splayd_id']}"
+			end
+			pos=pos+1
+		end
+		if designated_filter != ""
+			designated_filter += ")"
+		end
+
 		return "SELECT * FROM splayds WHERE
 				1=1
 				#{version_filter}
@@ -370,6 +401,7 @@ class Jobd
 				#{localization_filter}
 				#{bytecode_filter}
 				#{mandatory_filter}
+				#{designated_filter}
 				#{hostmasks_filter}
 				#{distance_filter}
 				ORDER BY RAND()"
@@ -472,7 +504,27 @@ class Jobd
 			end
 		end
 
-      		no_resources = false
+		# Designated splayds filter
+		designated_ok = true
+		$db.select_all("SELECT * FROM job_designated_splayds
+				WHERE job_id='#{job['id']}'") do |jds|
+			ds = $db.select_one "SELECT id FROM splayds WHERE
+					id='#{jds['splayd_id']}'"
+			if ds
+				if c_splayd['nb_nodes'][ds['id']] == c_splayd['max_number'][ds['id']]
+					status_msg += "Designated splayd: #{ds['id']} " +
+							"has no free slot.\n"
+					designated_ok = false
+				end
+			else
+				status_msg += "Designated splayd: #{jds['splayd_id']}" + 
+					" does not have the requested ressources or is not available.\n"
+				designated_ok = false # redundant???
+				no_resources = true
+			end
+		end
+
+		no_resources = false
 
 		# Compute the number of splayds with the required characteristics
 		if occupation.size < job['nb_splayds']
@@ -482,20 +534,20 @@ class Jobd
         		end
 
 			# Set flag if not enough splayds are available
-        		if nb_total < job['nb_splayds']
-          			no_resources = true
-        		end
+			if nb_total < job['nb_splayds']
+				no_resources = true
+			end
 
 			status_msg += "Not enough splayds found with the requested ressources " +
-					"(only #{occupation.size} instead of #{job['nb_splayds']})"
+					"(only #{occupation.size} instead of #{job['nb_splayds']}) \n"
 				normal_ok = false
 			 end
 
-			 ### Mandatory splayds
-			 mandatory_ok = true
+			### Mandatory splayds
+			mandatory_ok = true
 
-			 $db.select_all("SELECT * FROM job_mandatory_splayds
-			  		 WHERE job_id='#{job['id']}'") do |mm|
+			$db.select_all("SELECT * FROM job_mandatory_splayds
+					 WHERE job_id='#{job['id']}'") do |mm|
 
 				m = $db.select_one "SELECT id, ref FROM splayds WHERE
 						id='#{mm['splayd_id']}'
@@ -517,46 +569,41 @@ class Jobd
 			 end
 
 			 # Set status to NO_RESOURCES
-			 if not mandatory_ok or (not normal_ok and no_resources)
+			 if no_resources #(not normal_ok and no_resources) or (not designated_ok and no_resources) 
 				set_job_status(job['id'], 'NO_RESSOURCES', status_msg)
-			  	#next
-				return c_splayd, occupation, status_msg, normal_ok, mandatory_ok, no_resources, true
+				return c_splayd, occupation, status_msg, normal_ok, mandatory_ok, designated_ok, no_resources, true
 			 end
 
-		return c_splayd, occupation, status_msg, normal_ok, mandatory_ok, no_resources, false
+		return c_splayd, occupation, status_msg, normal_ok, mandatory_ok, designated_ok, no_resources, false
 	end
 
 	# Splayds selection for JobdStandard and JobdTrace
 	def self.status_local_common(job)
 
-		c_splayd, occupation, status_msg, normal_ok, mandatory_ok, no_resources, do_next = self.select_splayds(job)
+		c_splayd, occupation, status_msg, normal_ok, mandatory_ok, designated_ok, no_resources, do_next = self.select_splayds(job)
 		if do_next == true
-			# next
 			return c_splayd, occupation, 0, nil, true
 		end
 
 		# Queue scheduled jobs
-      		time_now = Time.new().strftime("%Y-%m-%d %T")
-      		if job['scheduled_at'] && job['scheduled_at'].strftime("%Y-%m-%d %T") > time_now
+		time_now = Time.new().strftime("%Y-%m-%d %T")
+		if job['scheduled_at'] && job['scheduled_at'].strftime("%Y-%m-%d %T") > time_now
 			set_job_status(job['id'], 'QUEUED', status_msg)
-        		#next
 			return c_splayd, occupation, 0, nil, true
-      		end
+		end
 
-      		if not normal_ok and not no_resources
+		if(not normal_ok or not designated_ok) and not no_resources
 			if job['strict'] == "FALSE"
-        			set_job_status(job['id'], 'QUEUED', status_msg)
-        			#next
+				set_job_status(job['id'], 'QUEUED', status_msg)
 				return c_splayd, occupation, 0, nil, true
 			else
-				status_msg = "Cannot be submitted immediately: " +
-					     "Not enough splayds found with the requested resources " +
-					     "(only #{occupation.size} instead of #{job['nb_splayds']})"
+				status_msg = "Cannot be submitted immediately: " + 
+					"Not enough splayds found with the requested resources " + 
+					"(only #{occupation.size} instead of #{job['nb_splayds']}) \n"
 				set_job_status(job['id'], 'NO_RESSOURCES', status_msg)
-        			#next
 				return c_splayd, occupation, 0, nil, true
 			end
-      		end
+		end
 
 		# We will send the job !
 		new_job = create_job_json(job)
@@ -592,28 +639,41 @@ class Jobd
 
 	def self.status_queued_common(job)
 
-		c_splayd, occupation, status_msg, normal_ok, mandatory_ok, no_resources, do_next = self.select_splayds(job)
+		queue_timeout = job['queue_timeout']
+		status_time = job['status_time']
+		if queue_timeout != 0 && queue_timeout < @@max_queue_timeout then
+			# take into account user-defined timeout
+			if Time.now.to_i > status_time + queue_timeout then
+				set_job_status(job['id'], 'QUEUE_TIMEOUT')
+			end
+		else
+			# take into account administrator-defined timeout
+			if Time.now.to_i > status_time + @@max_queue_timeout then
+				set_job_status(job['id'], 'QUEUE_TIMEOUT')
+			end
+		end
+
+		c_splayd, occupation, status_msg, normal_ok, mandatory_ok, designated_ok, no_resources, do_next = self.select_splayds(job)
 		if do_next == true
-			# next
 			return c_splayd, occupation, 0, nil, true
 		end
 
-		if not mandatory_ok or (not normal_ok and no_resources)
+		if (not normal_ok or not designated_ok) and no_resources
 			set_job_status(job['id'], 'NO_RESSOURCES', status_msg)
-			return c_splayd, occupation, 0, nil, true #next
+			return c_splayd, occupation, 0, nil, true
 		end
 
-                if not normal_ok and not no_resources
+		if (not normal_ok or not designated_ok) and not no_resources
 			if job['strict'] == "FALSE"
-        			return c_splayd, occupation, 0, nil, true #next
+				return c_splayd, occupation, 0, nil, true
 			else
-				status_msg = "Cannot be submitted immediately: " +
-					     "Not enough splayds found with the requested resources " +
-					     "(only #{occupation.size} instead of #{job['nb_splayds']})"
+				status_msg = "Cannot be submitted immediately: " + 
+					"Not enough splayds found with the requested resources " + 
+					"(only #{occupation.size} instead of #{job['nb_splayds']}) \n"
 				set_job_status(job['id'], 'NO_RESSOURCES', status_msg)
-        			return c_splayd, occupation, 0, nil, true #next
+				return c_splayd, occupation, 0, nil, true
 			end
-      		end
+		end
 
 		# We will send the job !
 
@@ -651,4 +711,3 @@ class Jobd
 	end
 
 end
-

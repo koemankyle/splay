@@ -28,8 +28,8 @@ SplayControllerConfig::NumSplayd = 1
 
 require_relative 'lib/all'
 
-$log.level = Logger::DEBUG
-#$log.level = Logger::INFO
+#$log.level = Logger::DEBUG
+$log.level = Logger::INFO
 
 puts
 puts ">>> Splayd Controller #{SplayControllerConfig::CTLVersion} <<<"
@@ -51,10 +51,8 @@ if SplayControllerConfig::AllowNativeLibs
 end
 
 JobdTrace.init
-JobdTrace.run
 
 JobdTraceAlt.run
-
 Unseend.run
 Statusd.run
 Loadavgd.run

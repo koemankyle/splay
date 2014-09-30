@@ -114,20 +114,6 @@ class JobdGrid < JobdStandard
                   libs.lib_arch=splayds.architecture AND
                   libs.lib_os=splayds.os AND
                   splayds.protocol='grid'"
-    #puts "LibFilter: #{lib_filter}"
-    print "\nraluca: query: "
-    print("SELECT splayds.* FROM splayds,libs WHERE
-				1=1
-				#{version_filter}
-				#{resources_filter}
-				#{localization_filter}
-				#{bytecode_filter}
-				#{mandatory_filter}
-				#{hostmasks_filter}
-				#{distance_filter}
-				#{lib_filter}
-				ORDER BY RAND()")
-    print("\n")
 		return "SELECT splayds.* FROM splayds,libs WHERE
 				1=1
 				#{version_filter}
